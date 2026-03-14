@@ -34,7 +34,6 @@ import wave
 from typing import Callable, Optional, Set
 
 import numpy as np
-import sounddevice as sd
 
 logger = logging.getLogger("stt-hotkey")
 
@@ -46,10 +45,19 @@ class MicRecorder:
     """Push-to-talk microphone capture using sounddevice."""
 
     def __init__(self, samplerate: int = 16000, channels: int = 1):
+        try:
+            import sounddevice as sd
+        except ImportError as exc:
+            raise RuntimeError(
+                "Missing Python dependency 'sounddevice'. "
+                "Install requirements with: python3 -m pip install -r requirements.txt"
+            ) from exc
+
+        self._sd = sd
         self.samplerate = samplerate
         self.channels = channels
         self._audio_queue: queue.Queue[np.ndarray] = queue.Queue()
-        self._stream: Optional[sd.InputStream] = None
+        self._stream = None
         self._recording = False
 
     def _callback(self, indata, frames, time_info, status):
@@ -64,7 +72,7 @@ class MicRecorder:
         while not self._audio_queue.empty():
             self._audio_queue.get_nowait()
         self._recording = True
-        self._stream = sd.InputStream(
+        self._stream = self._sd.InputStream(
             samplerate=self.samplerate,
             channels=self.channels,
             dtype="int16",
@@ -202,7 +210,7 @@ def _type_x11(text: str):
     elif has_xdotool:
         subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "12", text], timeout=30)
     else:
-        logger.error("Install xdotool and xclip: sudo apt install xdotool xclip")
+        logger.error("Install xdotool and xclip for X11 typing support")
 
 
 def _type_wayland(text: str):
@@ -216,7 +224,7 @@ def _type_wayland(text: str):
     elif has_wtype:
         subprocess.run(["wtype", text], timeout=30)
     else:
-        logger.error("Install wtype and wl-clipboard: sudo apt install wtype wl-clipboard")
+        logger.error("Install wtype and wl-clipboard for Wayland typing support")
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -251,18 +259,30 @@ class HotkeyListener:
         self.hotkey = hotkey.lower()
         self._stop_event = threading.Event()
         self._active = False
+        self._error: Optional[Exception] = None
         self._thread: Optional[threading.Thread] = None
 
     def start(self):
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._error = None
+        self._thread = threading.Thread(target=self._run_wrapper, daemon=True)
         self._thread.start()
+        time.sleep(0.2)
+        if self._error is not None:
+            raise self._error
 
     def stop(self):
         self._stop_event.set()
         self._cleanup()
         if self._thread:
             self._thread.join(timeout=2)
+
+    def _run_wrapper(self):
+        try:
+            self._run()
+        except Exception as exc:
+            self._error = exc
+            self._stop_event.set()
 
     def _run(self):
         raise NotImplementedError
@@ -375,8 +395,15 @@ class EvdevListener(HotkeyListener):
         import evdev
         devices = []
         for path in evdev.list_devices():
-            dev = evdev.InputDevice(path)
-            caps = dev.capabilities(verbose=False).get(1, [])
+            try:
+                dev = evdev.InputDevice(path)
+                caps = dev.capabilities(verbose=False).get(1, [])
+            except PermissionError as exc:
+                raise RuntimeError(
+                    "Cannot read keyboard devices via evdev. "
+                    "Add your user to the input group, then log out and back in: "
+                    "sudo usermod -aG input $USER"
+                ) from exc
             if 30 in caps and len(caps) > 50:  # has KEY_A and many keys
                 devices.append(dev)
         if not devices:
@@ -503,6 +530,29 @@ def create_listener(on_press, on_release, hotkey="scroll_lock", backend=None):
         pass
 
     raise RuntimeError("Install pynput or evdev: pip install pynput evdev")
+
+
+def print_setup_help(error: Exception):
+    server = _detect_display_server()
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    venv_python = os.path.join(script_dir, ".venv", "bin", "python")
+
+    print(f"Error: {error}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Setup checklist:", file=sys.stderr)
+    print("  1. Run the installer: ./install.sh", file=sys.stderr)
+    print(f"     Or use the project venv directly: {venv_python} stt_hotkey.py", file=sys.stderr)
+
+    if server == "wayland":
+        print("  2. Install Wayland tools: sudo pacman -S wtype wl-clipboard", file=sys.stderr)
+        print("  3. Enable global hotkeys: sudo usermod -aG input $USER", file=sys.stderr)
+        print(f"  4. Log out and back in, then run: {venv_python} stt_hotkey.py --backend evdev --hotkey f9", file=sys.stderr)
+    else:
+        print("  2. Install X11 tools: sudo pacman -S xdotool xclip", file=sys.stderr)
+        print(f"  3. Run: {venv_python} stt_hotkey.py --backend pynput --hotkey f9", file=sys.stderr)
+
+    print("", file=sys.stderr)
+    print(f"Detected session: {server}", file=sys.stderr)
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -646,13 +696,17 @@ Examples:
     print(f"  Auto-type: {'no' if args.no_type else 'yes'}")
     print()
 
-    app = STTApp(
-        hotkey=args.hotkey,
-        model_path=args.model,
-        backend=args.backend,
-        auto_type=not args.no_type,
-    )
-    app.run()
+    try:
+        app = STTApp(
+            hotkey=args.hotkey,
+            model_path=args.model,
+            backend=args.backend,
+            auto_type=not args.no_type,
+        )
+        app.run()
+    except (ImportError, ModuleNotFoundError, RuntimeError, OSError) as exc:
+        print_setup_help(exc)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

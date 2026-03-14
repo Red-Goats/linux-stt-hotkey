@@ -10,7 +10,7 @@ echo ""
 # ── 1. Python packages ──────────────────────────────────────────────────────
 echo "[1/3] Removing Python packages..."
 
-PACKAGES=(faster-whisper sounddevice pynput)
+PACKAGES=(faster-whisper sounddevice pynput evdev)
 OPTIONAL_PACKAGES=(numpy)
 
 for pkg in "${PACKAGES[@]}"; do
@@ -91,5 +91,6 @@ echo ""
 echo "=== Uninstall Complete ==="
 echo ""
 echo "The following were NOT removed (delete manually if desired):"
+echo "  - Local virtualenv: $(cd "$(dirname "$0")" && pwd)/.venv"
 echo "  - This project directory ($(cd "$(dirname "$0")" && pwd))"
 echo "  - Any Wayland tools: wtype, wl-clipboard"
