@@ -68,10 +68,13 @@ echo "=== Installation Complete ==="
 echo ""
 if [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
     echo "Wayland session detected."
-    echo "  For global hotkeys, add your user to the input group and log out/in:"
+    echo "  For global hotkeys, add your user to the input group:"
     echo "    sudo usermod -aG input \$USER"
-    echo "  Recommended start command after re-login:"
+    echo "  Try this first to start a shell with the new group, without logging out:"
+    echo "    newgrp input"
+    echo "  Then run:"
     echo "    $VENV_DIR/bin/python $SCRIPT_DIR/stt_hotkey.py --backend evdev"
+    echo "  If that still fails, log out and back in once."
     echo ""
 fi
 

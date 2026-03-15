@@ -104,8 +104,11 @@ Models are downloaded automatically on first run and cached at `~/.cache/hugging
 On Wayland, use the `evdev` backend for global hotkeys. This needs access to `/dev/input`:
 
 ```bash
-# Add yourself to the input group (one-time, requires re-login)
+# Add yourself to the input group
 sudo usermod -aG input $USER
+
+# Try a fresh shell with the new group, without logging out
+newgrp input
 
 # Arch packages used for paste/type on Wayland
 sudo pacman -S wtype wl-clipboard
@@ -113,6 +116,8 @@ sudo pacman -S wtype wl-clipboard
 # Then run with evdev backend
 .venv/bin/python stt_hotkey.py --backend evdev
 ```
+
+If `newgrp input` does not solve it, log out and back in once.
 
 `f9` is the default hotkey because it is usually available without needing modifiers.
 
@@ -149,7 +154,9 @@ echo $DISPLAY
 ```bash
 .venv/bin/python -m pip install -r requirements.txt
 sudo usermod -aG input $USER
-# Log out and back in, then use --backend evdev
+# Try a fresh shell first
+newgrp input
+# Then use --backend evdev
 .venv/bin/python stt_hotkey.py --backend evdev
 ```
 

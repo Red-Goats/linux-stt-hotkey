@@ -469,7 +469,9 @@ def print_setup_help(error: Exception):
     if server == "wayland":
         print("  2. Install Wayland tools: sudo pacman -S wtype wl-clipboard", file=sys.stderr)
         print("  3. Enable global hotkeys: sudo usermod -aG input $USER", file=sys.stderr)
-        print(f"  4. Log out and back in, then run: {venv_python} stt_hotkey.py --backend evdev", file=sys.stderr)
+        print("  4. Try: newgrp input", file=sys.stderr)
+        print(f"  5. Then run: {venv_python} stt_hotkey.py --backend evdev", file=sys.stderr)
+        print("  6. If that still fails, log out and back in once.", file=sys.stderr)
     else:
         print("  2. Install X11 tools: sudo pacman -S xdotool xclip", file=sys.stderr)
         print(f"  3. Run: {venv_python} stt_hotkey.py --backend pynput", file=sys.stderr)
