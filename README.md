@@ -1,23 +1,26 @@
 # linux-stt-hotkey
 
-Lightweight push-to-talk speech-to-text for Linux. Hold a hotkey to record, release to transcribe — text is pasted directly into the active window.
+Offline push-to-talk speech-to-text for Linux.
+
+Install it once, leave it running in the background, then hold a hotkey in any focused text field to dictate and release to paste the transcription.
 
 - Fully **offline** — no internet after setup
 - **Auto-punctuation and capitalization** (Whisper-based)
 - Works on **X11** and **Wayland**
 - English only
 
----
+## What It Does
+
+- Runs as a small background listener instead of taking over your terminal
+- Pastes into the currently focused app, so it works in editors, browsers, chat apps, and terminals
+- Uses local Whisper models with no cloud API dependency
+- Installs a `stt-hotkey` launcher and autostart entry for easier daily use
 
 ## Requirements
 
-- Linux (Ubuntu 20.04+, Fedora 36+, Arch, etc.)
+- Linux desktop session on X11 or Wayland
 - Python 3.9+
-- X11 or Wayland desktop session
-
----
-
-## Installation
+- A working microphone
 
 ```bash
 chmod +x install.sh
@@ -29,47 +32,76 @@ The installer handles everything:
 2. Creates a local virtualenv at `.venv/`
 3. Installs Python packages (`faster-whisper`, `sounddevice`, `numpy`, `pynput`, `evdev`)
 4. Downloads the Whisper `base.en` model (~74MB, one-time)
+5. Installs a `stt-hotkey` launcher in `~/.local/bin/`
+6. Adds desktop autostart so it is ready after login
 
----
-
-## Usage
+## Quick Start
 
 ```bash
-.venv/bin/python stt_hotkey.py
+stt-hotkey
 ```
 
-**Hold** your hotkey to start recording. **Release** to transcribe and paste.
+Then:
+1. Focus any text box, editor, or terminal input.
+2. Hold `F9` to record.
+3. Release `F9` to transcribe and paste.
 
-### Options
+If `~/.local/bin` is not on your `PATH`, run:
 
-| Flag | Default | Description |
+```bash
+~/.local/bin/stt-hotkey
+```
+
+Use these commands to manage it:
+
+| Command | Description |
+|---|---|
+| `stt-hotkey` | Start in the background |
+| `stt-hotkey run` | Run in the foreground |
+| `stt-hotkey stop` | Stop the background app |
+| `stt-hotkey status` | Show whether it is running |
+
+## Options
+
+| Command / Flag | Default | Description |
 |---|---|---|
+| `start` | yes | Start the app in the background |
+| `run` | - | Run in the foreground |
+| `stop` | - | Stop the background app |
+| `status` | - | Show whether the background app is running |
 | `--hotkey KEY` | `f9` | Key to hold for push-to-talk |
 | `--model SIZE` | `base.en` | Whisper model size (see below) |
 | `--backend BACKEND` | auto | Force `pynput` (X11) or `evdev` (Wayland) |
 | `--no-type` | off | Print transcription only, don't paste |
 | `-v, --verbose` | off | Enable debug logging |
 
-### Examples
+## Examples
 
 ```bash
-# Default: F9 hotkey, base.en model
-.venv/bin/python stt_hotkey.py
+# Start in background with the default F9 hotkey
+stt-hotkey
+
+# Run in foreground for debugging
+stt-hotkey run
 
 # Use F8 as the hotkey
-.venv/bin/python stt_hotkey.py --hotkey f8
+stt-hotkey start --hotkey f8
 
 # Use the faster tiny model
-.venv/bin/python stt_hotkey.py --model tiny.en
+stt-hotkey start --model tiny.en
 
 # Just print to terminal, don't type into window
-.venv/bin/python stt_hotkey.py --no-type
+stt-hotkey run --no-type
 
 # Force Wayland evdev backend
-.venv/bin/python stt_hotkey.py --backend evdev
-```
+stt-hotkey start --backend evdev
 
----
+# Stop the background app
+stt-hotkey stop
+
+# Check whether it is running
+stt-hotkey status
+```
 
 ## Hotkey Reference
 
@@ -97,11 +129,9 @@ Choose one single push-to-talk key:
 
 Models are downloaded automatically on first run and cached at `~/.cache/huggingface/`.
 
----
-
 ## Wayland
 
-On Wayland, use the `evdev` backend for global hotkeys. This needs access to `/dev/input`:
+On Wayland, global hotkeys usually need the `evdev` backend and access to `/dev/input`:
 
 ```bash
 # Add yourself to the input group
@@ -114,14 +144,12 @@ newgrp input
 sudo pacman -S wtype wl-clipboard
 
 # Then run with evdev backend
-.venv/bin/python stt_hotkey.py --backend evdev
+stt-hotkey start --backend evdev
 ```
 
 If `newgrp input` does not solve it, log out and back in once.
 
 `f9` is the default hotkey because it is usually available without needing modifiers.
-
----
 
 ## Uninstall
 
@@ -131,8 +159,6 @@ chmod +x uninstall.sh
 ```
 
 Removes the local `.venv`, cached models, and optionally shared system packages.
-
----
 
 ## Troubleshooting
 
@@ -152,12 +178,12 @@ echo $DISPLAY
 
 **Hotkey not detected (Wayland)**
 ```bash
-.venv/bin/python -m pip install -r requirements.txt
+./install.sh
 sudo usermod -aG input $USER
 # Try a fresh shell first
 newgrp input
 # Then use --backend evdev
-.venv/bin/python stt_hotkey.py --backend evdev
+stt-hotkey start --backend evdev
 ```
 
 **`xdotool` / `xclip` not found**
@@ -174,5 +200,5 @@ sudo pacman -S wtype wl-clipboard
 The model downloads from Hugging Face on first run. If you're behind a proxy:
 ```bash
 export HTTPS_PROXY=http://your-proxy:port
-.venv/bin/python stt_hotkey.py
+stt-hotkey start
 ```

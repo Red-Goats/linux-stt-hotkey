@@ -7,11 +7,36 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/.venv"
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}/hub"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/linux-stt-hotkey"
+BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
+APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+LAUNCHER_PATH="$BIN_DIR/stt-hotkey"
+DESKTOP_PATH="$APP_DIR/linux-stt-hotkey.desktop"
+AUTOSTART_PATH="$AUTOSTART_DIR/linux-stt-hotkey.desktop"
 
 echo "=== Linux Speech-to-Text Hotkey - Uninstaller ==="
 echo ""
 
-echo "[1/3] Removing local virtualenv..."
+echo "[1/4] Stopping app and removing local launcher files..."
+if [ -x "$VENV_DIR/bin/python" ]; then
+    "$VENV_DIR/bin/python" "$SCRIPT_DIR/stt_hotkey.py" stop >/dev/null 2>&1 || true
+fi
+
+for PATH_TO_REMOVE in "$LAUNCHER_PATH" "$DESKTOP_PATH" "$AUTOSTART_PATH"; do
+    if [ -e "$PATH_TO_REMOVE" ]; then
+        rm -f "$PATH_TO_REMOVE"
+        echo "  Removed: $PATH_TO_REMOVE"
+    fi
+done
+
+if [ -d "$STATE_DIR" ]; then
+    rm -rf "$STATE_DIR"
+    echo "  Removed: $STATE_DIR"
+fi
+
+echo ""
+echo "[2/4] Removing local virtualenv..."
 if [ -d "$VENV_DIR" ]; then
     rm -rf "$VENV_DIR"
     echo "  Removed: $VENV_DIR"
@@ -20,7 +45,7 @@ else
 fi
 
 echo ""
-echo "[2/3] Removing cached Whisper models..."
+echo "[3/4] Removing cached Whisper models..."
 REMOVED_ANY=false
 for SIZE in tiny.en base.en small.en; do
     MODEL_DIR="$HF_CACHE/models--Systran--faster-whisper-${SIZE}"
@@ -37,7 +62,7 @@ if [ "$REMOVED_ANY" = false ]; then
 fi
 
 echo ""
-echo "[3/3] Optional shared packages..."
+echo "[4/4] Optional shared packages..."
 echo "  System packages may be used by other apps."
 read -rp "  Remove shared system packages too? [y/N] " REMOVE_SYS
 

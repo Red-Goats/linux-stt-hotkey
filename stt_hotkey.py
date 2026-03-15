@@ -7,11 +7,11 @@ the active window. Uses faster-whisper (base.en) for offline English STT
 with auto-punctuation and capitalization.
 
 Usage:
-    python3 stt_hotkey.py               # default: F9
+    python3 stt_hotkey.py               # start in background
+    python3 stt_hotkey.py run           # foreground mode
     python3 stt_hotkey.py --hotkey f8   # use F8
-    python3 stt_hotkey.py --model base.en
-    python3 stt_hotkey.py --no-type
-    python3 stt_hotkey.py --backend evdev
+    python3 stt_hotkey.py stop
+    python3 stt_hotkey.py status
 
 Dependencies:
     pip install faster-whisper sounddevice numpy pynput
@@ -19,10 +19,13 @@ Dependencies:
 """
 
 import argparse
+from dataclasses import dataclass
+import fcntl
 import io
 import logging
 import os
 import queue
+import signal
 import shutil
 import subprocess
 import sys
@@ -36,6 +39,9 @@ import numpy as np
 
 logger = logging.getLogger("stt-hotkey")
 
+APP_NAME = "linux-stt-hotkey"
+KNOWN_COMMANDS = {"run", "start", "stop", "status"}
+
 SUPPORTED_HOTKEYS = (
     "f8",
     "f9",
@@ -45,6 +51,165 @@ SUPPORTED_HOTKEYS = (
     "scroll_lock",
     "pause",
 )
+
+
+@dataclass(frozen=True)
+class RuntimeOptions:
+    hotkey: str = "f9"
+    model: str = "base.en"
+    backend: Optional[str] = None
+    auto_type: bool = True
+    verbose: bool = False
+
+
+@dataclass(frozen=True)
+class AppPaths:
+    state_dir: str
+    pid_file: str
+    log_file: str
+    launcher_path: str
+
+
+def _build_paths() -> AppPaths:
+    state_home = os.environ.get("XDG_STATE_HOME")
+    if not state_home:
+        state_home = os.path.join(os.path.expanduser("~"), ".local", "state")
+
+    state_dir = os.path.join(state_home, APP_NAME)
+    os.makedirs(state_dir, exist_ok=True)
+
+    bin_home = os.environ.get("XDG_BIN_HOME")
+    if not bin_home:
+        bin_home = os.path.join(os.path.expanduser("~"), ".local", "bin")
+
+    return AppPaths(
+        state_dir=state_dir,
+        pid_file=os.path.join(state_dir, "app.pid"),
+        log_file=os.path.join(state_dir, "app.log"),
+        launcher_path=os.path.join(bin_home, "stt-hotkey"),
+    )
+
+
+PATHS = _build_paths()
+
+
+def _read_pid() -> Optional[int]:
+    try:
+        with open(PATHS.pid_file, "r", encoding="utf-8") as handle:
+            value = handle.read().strip()
+    except FileNotFoundError:
+        return None
+
+    if not value.isdigit():
+        return None
+    return int(value)
+
+
+def _process_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _remove_stale_pidfile():
+    pid = _read_pid()
+    if pid and not _process_running(pid):
+        try:
+            os.unlink(PATHS.pid_file)
+        except FileNotFoundError:
+            pass
+
+
+def _is_running() -> bool:
+    _remove_stale_pidfile()
+    pid = _read_pid()
+    return bool(pid and _process_running(pid))
+
+
+def _build_run_command(args) -> list[str]:
+    cmd = [sys.executable, os.path.abspath(__file__), "run"]
+    cmd.extend(["--hotkey", args.hotkey])
+    cmd.extend(["--model", args.model])
+    if args.backend:
+        cmd.extend(["--backend", args.backend])
+    if args.no_type:
+        cmd.append("--no-type")
+    if args.verbose:
+        cmd.append("--verbose")
+    return cmd
+
+
+def _options_from_args(args) -> RuntimeOptions:
+    return RuntimeOptions(
+        hotkey=getattr(args, "hotkey", "f9"),
+        model=getattr(args, "model", "base.en"),
+        backend=getattr(args, "backend", None),
+        auto_type=not getattr(args, "no_type", False),
+        verbose=getattr(args, "verbose", False),
+    )
+
+
+def _start_background(args) -> int:
+    if _is_running():
+        pid = _read_pid()
+        print(f"{APP_NAME} is already running (pid {pid}).")
+        return 0
+
+    log_path = PATHS.log_file
+    cmd = _build_run_command(args)
+    with open(log_path, "ab") as log_handle:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=log_handle,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+    for _ in range(30):
+        time.sleep(0.2)
+        if _is_running():
+            pid = _read_pid()
+            print(f"Started {APP_NAME} in the background (pid {pid}).")
+            print(f"Log file: {log_path}")
+            return 0
+
+    print(f"Failed to start {APP_NAME}. Check log: {log_path}", file=sys.stderr)
+    return 1
+
+
+def _stop_background() -> int:
+    pid = _read_pid()
+    if not pid or not _process_running(pid):
+        _remove_stale_pidfile()
+        print(f"{APP_NAME} is not running.")
+        return 0
+
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(30):
+        time.sleep(0.2)
+        if not _process_running(pid):
+            _remove_stale_pidfile()
+            print(f"Stopped {APP_NAME}.")
+            return 0
+
+    print(f"Could not stop pid {pid}.", file=sys.stderr)
+    return 1
+
+
+def _print_status() -> int:
+    if _is_running():
+        print(f"{APP_NAME} is running (pid {_read_pid()}).")
+        print(f"Log file: {PATHS.log_file}")
+        return 0
+
+    print(f"{APP_NAME} is not running.")
+    return 1
 
 # ───────────────────────────────────────────────────────────────────────────
 # Audio Recorder
@@ -457,24 +622,22 @@ def create_listener(on_press, on_release, hotkey="f9", backend=None):
 
 def print_setup_help(error: Exception):
     server = _detect_display_server()
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    venv_python = os.path.join(script_dir, ".venv", "bin", "python")
 
     print(f"Error: {error}", file=sys.stderr)
     print("", file=sys.stderr)
     print("Setup checklist:", file=sys.stderr)
     print("  1. Run the installer: ./install.sh", file=sys.stderr)
-    print(f"     Or use the project venv directly: {venv_python} stt_hotkey.py", file=sys.stderr)
+    print(f"     Or use the launcher directly: {PATHS.launcher_path}", file=sys.stderr)
 
     if server == "wayland":
         print("  2. Install Wayland tools: sudo pacman -S wtype wl-clipboard", file=sys.stderr)
         print("  3. Enable global hotkeys: sudo usermod -aG input $USER", file=sys.stderr)
         print("  4. Try: newgrp input", file=sys.stderr)
-        print(f"  5. Then run: {venv_python} stt_hotkey.py --backend evdev", file=sys.stderr)
+        print(f"  5. Then run: {PATHS.launcher_path} start --backend evdev", file=sys.stderr)
         print("  6. If that still fails, log out and back in once.", file=sys.stderr)
     else:
         print("  2. Install X11 tools: sudo pacman -S xdotool xclip", file=sys.stderr)
-        print(f"  3. Run: {venv_python} stt_hotkey.py --backend pynput", file=sys.stderr)
+        print(f"  3. Run: {PATHS.launcher_path} start --backend pynput", file=sys.stderr)
 
     print("", file=sys.stderr)
     print(f"Detected session: {server}", file=sys.stderr)
@@ -487,21 +650,22 @@ def print_setup_help(error: Exception):
 class STTApp:
     """Ties everything together: hotkey -> record -> transcribe -> type."""
 
-    def __init__(self, hotkey: str, model_path: Optional[str], backend: Optional[str],
-                 auto_type: bool = True):
-        self.auto_type = auto_type
+    def __init__(self, options: RuntimeOptions):
+        self.options = options
         self._lock = threading.Lock()
         self._recording = False
+        self._pid_handle = None
+        self._shutdown = threading.Event()
 
         # Init components
         print("Loading speech recognition model...")
-        self.recognizer = SpeechRecognizer(model_path)
+        self.recognizer = SpeechRecognizer(options.model)
         self.recorder = MicRecorder(samplerate=16000, channels=1)
         self.listener = create_listener(
             on_press=self._on_hotkey_press,
             on_release=self._on_hotkey_release,
-            hotkey=hotkey,
-            backend=backend,
+            hotkey=options.hotkey,
+            backend=options.backend,
         )
 
     def _on_hotkey_press(self):
@@ -543,7 +707,7 @@ class STTApp:
         logger.info("Transcribed: %s", text)
         print(f"  >> {text}")
 
-        if self.auto_type:
+        if self.options.auto_type:
             time.sleep(0.1)  # small delay for window focus
             type_text(text)
 
@@ -552,81 +716,159 @@ class STTApp:
 
     def run(self):
         """Start the app and block until Ctrl+C."""
-        self.listener.start()
-        print("Ready! Hold your hotkey to record, release to transcribe.")
-        print("Press Ctrl+C to quit.\n")
+        self._acquire_single_instance()
+        previous_sigint = signal.getsignal(signal.SIGINT)
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def _handle_shutdown(signum, frame):
+            self._shutdown.set()
 
         try:
-            while True:
+            signal.signal(signal.SIGINT, _handle_shutdown)
+            signal.signal(signal.SIGTERM, _handle_shutdown)
+            self.listener.start()
+            notify("STT Ready", "Hold the hotkey in any text field to dictate.", expire_ms=2500)
+            print("Ready! Hold your hotkey to record, release to transcribe.")
+            print("Press Ctrl+C to quit.\n")
+
+            while not self._shutdown.is_set():
                 time.sleep(0.5)
-        except KeyboardInterrupt:
-            pass
+        except SystemExit:
+            raise
         finally:
             print("\nShutting down...")
             self.listener.stop()
+            signal.signal(signal.SIGINT, previous_sigint)
+            signal.signal(signal.SIGTERM, previous_sigterm)
+            self._release_single_instance()
+
+    def _acquire_single_instance(self):
+        pid_path = PATHS.pid_file
+        self._pid_handle = open(pid_path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(self._pid_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(
+                f"{APP_NAME} is already running. Use 'stt-hotkey status' or "
+                f"'stt-hotkey stop'."
+            ) from exc
+
+        self._pid_handle.seek(0)
+        self._pid_handle.truncate()
+        self._pid_handle.write(str(os.getpid()))
+        self._pid_handle.flush()
+
+    def _release_single_instance(self):
+        if not self._pid_handle:
+            return
+
+        try:
+            os.unlink(PATHS.pid_file)
+        except FileNotFoundError:
+            pass
+
+        try:
+            fcntl.flock(self._pid_handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        self._pid_handle.close()
+        self._pid_handle = None
 
 
 # ───────────────────────────────────────────────────────────────────────────
 # CLI
 # ───────────────────────────────────────────────────────────────────────────
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Lightweight push-to-talk speech-to-text for Linux",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  %(prog)s                              # F9 push-to-talk
-  %(prog)s --hotkey f8                  # F8 push-to-talk
-  %(prog)s --hotkey pause               # Pause/Break push-to-talk
-  %(prog)s --no-type                    # print only, don't paste
-  %(prog)s --backend evdev              # force evdev (Wayland)
+  %(prog)s                              # start in background
+  %(prog)s run                          # run in foreground
+  %(prog)s --hotkey f8                  # use F8
+  %(prog)s stop                         # stop the background app
+  %(prog)s status                       # show whether it is running
 """,
     )
-    parser.add_argument(
-        "--hotkey", default="f9", choices=SUPPORTED_HOTKEYS,
-        help="Push-to-talk key (default: f9)",
-    )
-    parser.add_argument(
-        "--model", default="base.en",
-        choices=["tiny.en", "base.en", "small.en"],
-        help="Whisper model size (default: base.en). "
-             "tiny.en=fastest/39MB, base.en=balanced/74MB, small.en=best/244MB",
-    )
-    parser.add_argument(
-        "--backend", choices=["pynput", "evdev"], default=None,
-        help="Force hotkey backend (default: auto-detect)",
-    )
-    parser.add_argument(
-        "--no-type", action="store_true",
-        help="Don't type text into active window, just print to terminal",
-    )
-    parser.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="Enable debug logging",
-    )
+    subparsers = parser.add_subparsers(dest="command")
 
-    args = parser.parse_args()
+    run_parser = subparsers.add_parser("run", help="Run in the foreground")
+    start_parser = subparsers.add_parser("start", help="Start in the background")
+    subparsers.add_parser("stop", help="Stop the background app")
+    subparsers.add_parser("status", help="Show background app status")
 
+    for current in (run_parser, start_parser):
+        current.add_argument(
+            "--hotkey", default="f9", choices=SUPPORTED_HOTKEYS,
+            help="Push-to-talk key (default: f9)",
+        )
+        current.add_argument(
+            "--model", default="base.en",
+            choices=["tiny.en", "base.en", "small.en"],
+            help="Whisper model size (default: base.en). "
+                 "tiny.en=fastest/39MB, base.en=balanced/74MB, small.en=best/244MB",
+        )
+        current.add_argument(
+            "--backend", choices=["pynput", "evdev"], default=None,
+            help="Force hotkey backend (default: auto-detect)",
+        )
+        current.add_argument(
+            "--no-type", action="store_true",
+            help="Don't type text into active window, just print to terminal",
+        )
+        current.add_argument(
+            "-v", "--verbose", action="store_true",
+            help="Enable debug logging",
+        )
+    return parser
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    if not argv:
+        return ["start"]
+    if argv[0] not in KNOWN_COMMANDS and argv[0] not in {"-h", "--help"}:
+        return ["start", *argv]
+    return argv
+
+
+def _configure_logging(verbose: bool):
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
 
+
+def _print_runtime_banner(options: RuntimeOptions):
     print("=== Linux STT Hotkey ===")
-    print(f"  Model:     {args.model}")
-    print(f"  Hotkey:    {args.hotkey}")
-    print(f"  Auto-type: {'no' if args.no_type else 'yes'}")
+    print(f"  Model:     {options.model}")
+    print(f"  Hotkey:    {options.hotkey}")
+    print(f"  Auto-type: {'yes' if options.auto_type else 'no'}")
     print()
 
+
+def main():
+    parser = _build_parser()
+    argv = sys.argv[1:]
+    argv = _normalize_argv(argv)
+
+    args = parser.parse_args(argv)
+    options = _options_from_args(args)
+    _configure_logging(options.verbose)
+
+    if args.command == "start":
+        raise SystemExit(_start_background(args))
+    if args.command == "stop":
+        raise SystemExit(_stop_background())
+    if args.command == "status":
+        raise SystemExit(_print_status())
+
+    _print_runtime_banner(options)
+
     try:
-        app = STTApp(
-            hotkey=args.hotkey,
-            model_path=args.model,
-            backend=args.backend,
-            auto_type=not args.no_type,
-        )
+        app = STTApp(options)
         app.run()
     except (ImportError, ModuleNotFoundError, RuntimeError, OSError) as exc:
         print_setup_help(exc)
