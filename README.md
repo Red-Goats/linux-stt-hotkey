@@ -44,7 +44,7 @@ The installer handles everything:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--hotkey KEY` | `scroll_lock` | Key to hold for push-to-talk |
+| `--hotkey KEY` | `f9` | Key to hold for push-to-talk |
 | `--model SIZE` | `base.en` | Whisper model size (see below) |
 | `--backend BACKEND` | auto | Force `pynput` (X11) or `evdev` (Wayland) |
 | `--no-type` | off | Print transcription only, don't paste |
@@ -53,14 +53,11 @@ The installer handles everything:
 ### Examples
 
 ```bash
-# Default: Scroll Lock hotkey, base.en model
+# Default: F9 hotkey, base.en model
 .venv/bin/python stt_hotkey.py
 
-# Use F9 as the hotkey
-.venv/bin/python stt_hotkey.py --hotkey f9
-
-# Key combo
-.venv/bin/python stt_hotkey.py --hotkey super+shift+s
+# Use F8 as the hotkey
+.venv/bin/python stt_hotkey.py --hotkey f8
 
 # Use the faster tiny model
 .venv/bin/python stt_hotkey.py --model tiny.en
@@ -76,30 +73,17 @@ The installer handles everything:
 
 ## Hotkey Reference
 
-### Modifier keys (combine with `+`)
+Choose one single push-to-talk key:
 
 | Name | Key |
 |---|---|
-| `ctrl` | Left/Right Ctrl |
-| `shift` | Left/Right Shift |
-| `alt` | Left/Right Alt |
-| `super` | Super / Windows key |
-
-### Trigger keys
-
-| Name | Key |
-|---|---|
+| `f8` | Function key |
+| `f9` | Function key |
+| `f10` | Function key |
+| `f11` | Function key |
+| `f12` | Function key |
 | `scroll_lock` | Scroll Lock |
 | `pause` | Pause/Break |
-| `f1` – `f12` | Function keys |
-| `insert`, `home`, `end` | Navigation |
-| `page_up`, `page_down` | Navigation |
-| `caps_lock`, `num_lock` | Lock keys |
-| `esc` / `escape` | Escape |
-| `space`, `tab`, `enter` | Common keys |
-| `a`–`z`, `0`–`9` | Characters |
-
-**Combo example:** `--hotkey ctrl+shift+f9`
 
 ---
 
@@ -127,10 +111,10 @@ sudo usermod -aG input $USER
 sudo pacman -S wtype wl-clipboard
 
 # Then run with evdev backend
-.venv/bin/python stt_hotkey.py --backend evdev --hotkey f9
+.venv/bin/python stt_hotkey.py --backend evdev
 ```
 
-`scroll_lock` is the default hotkey, but `f9` is a safer default on many laptops and compact keyboards.
+`f9` is the default hotkey because it is usually available without needing modifiers.
 
 ---
 
@@ -141,7 +125,7 @@ chmod +x uninstall.sh
 ./uninstall.sh
 ```
 
-Removes Python packages, cached models, and optionally system packages.
+Removes the local `.venv`, cached models, and optionally shared system packages.
 
 ---
 
@@ -166,7 +150,7 @@ echo $DISPLAY
 .venv/bin/python -m pip install -r requirements.txt
 sudo usermod -aG input $USER
 # Log out and back in, then use --backend evdev
-.venv/bin/python stt_hotkey.py --backend evdev --hotkey f9
+.venv/bin/python stt_hotkey.py --backend evdev
 ```
 
 **`xdotool` / `xclip` not found**

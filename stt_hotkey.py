@@ -7,12 +7,11 @@ the active window. Uses faster-whisper (base.en) for offline English STT
 with auto-punctuation and capitalization.
 
 Usage:
-    python3 stt_hotkey.py                          # default: Scroll Lock
-    python3 stt_hotkey.py --hotkey f9               # use F9
-    python3 stt_hotkey.py --hotkey super+shift+s    # key combo
-    python3 stt_hotkey.py --model base.en           # model size (tiny.en/base.en/small.en)
-    python3 stt_hotkey.py --no-type                 # print only, don't type
-    python3 stt_hotkey.py --backend evdev            # force evdev backend
+    python3 stt_hotkey.py               # default: F9
+    python3 stt_hotkey.py --hotkey f8   # use F8
+    python3 stt_hotkey.py --model base.en
+    python3 stt_hotkey.py --no-type
+    python3 stt_hotkey.py --backend evdev
 
 Dependencies:
     pip install faster-whisper sounddevice numpy pynput
@@ -31,11 +30,21 @@ import tempfile
 import threading
 import time
 import wave
-from typing import Callable, Optional, Set
+from typing import Callable, Optional
 
 import numpy as np
 
 logger = logging.getLogger("stt-hotkey")
+
+SUPPORTED_HOTKEYS = (
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
+    "scroll_lock",
+    "pause",
+)
 
 # ───────────────────────────────────────────────────────────────────────────
 # Audio Recorder
@@ -305,77 +314,32 @@ class PynputListener(HotkeyListener):
     """X11 global hotkey using pynput (no root needed)."""
 
     def _parse_hotkey(self):
-        from pynput.keyboard import Key, KeyCode
+        from pynput.keyboard import Key
 
-        MODIFIER_MAP = {
-            "ctrl": Key.ctrl_l, "ctrl_l": Key.ctrl_l, "ctrl_r": Key.ctrl_r,
-            "shift": Key.shift_l, "shift_l": Key.shift_l, "shift_r": Key.shift_r,
-            "alt": Key.alt_l, "alt_l": Key.alt_l, "alt_r": Key.alt_r,
-            "super": Key.cmd_l, "super_l": Key.cmd_l, "super_r": Key.cmd_r,
-        }
         KEY_MAP = {
             "scroll_lock": Key.scroll_lock, "pause": Key.pause,
-            "print_screen": Key.print_screen, "insert": Key.insert,
-            "caps_lock": Key.caps_lock, "num_lock": Key.num_lock,
-            "f1": Key.f1, "f2": Key.f2, "f3": Key.f3, "f4": Key.f4,
-            "f5": Key.f5, "f6": Key.f6, "f7": Key.f7, "f8": Key.f8,
+            "f8": Key.f8,
             "f9": Key.f9, "f10": Key.f10, "f11": Key.f11, "f12": Key.f12,
-            "space": Key.space, "tab": Key.tab, "enter": Key.enter,
-            "esc": Key.esc, "escape": Key.esc,
         }
-        CANONICAL = {
-            Key.ctrl_r: Key.ctrl_l, Key.shift_r: Key.shift_l,
-            Key.alt_r: Key.alt_l, Key.cmd_r: Key.cmd_l,
-        }
-
-        parts = [p.strip() for p in self.hotkey.split("+")]
-        modifiers: Set = set()
-        trigger = None
-
-        for part in parts:
-            if part in MODIFIER_MAP:
-                modifiers.add(MODIFIER_MAP[part])
-            elif part in KEY_MAP:
-                trigger = KEY_MAP[part]
-            elif len(part) == 1:
-                trigger = KeyCode.from_char(part)
-            else:
-                raise ValueError(f"Unknown key: {part!r}")
-
-        if trigger is None:
-            raise ValueError(f"No trigger key in hotkey: {self.hotkey!r}")
-
-        return modifiers, trigger, CANONICAL
+        try:
+            return KEY_MAP[self.hotkey]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unsupported hotkey: {self.hotkey!r}. Choose one of: "
+                f"{', '.join(SUPPORTED_HOTKEYS)}"
+            ) from exc
 
     def _run(self):
-        from pynput.keyboard import Key, Listener
+        from pynput.keyboard import Listener
 
-        required_mods, trigger, CANONICAL = self._parse_hotkey()
-        held_mods: Set = set()
-
-        ALL_MODS = {
-            Key.ctrl_l, Key.ctrl_r, Key.shift_l, Key.shift_r,
-            Key.alt_l, Key.alt_r, Key.cmd_l, Key.cmd_r,
-        }
-
-        def canon(k):
-            return CANONICAL.get(k, k)
-
-        def mods_ok():
-            return {canon(m) for m in required_mods}.issubset({canon(m) for m in held_mods})
+        trigger = self._parse_hotkey()
 
         def on_press(key):
-            if key in ALL_MODS:
-                held_mods.add(key)
-            if key == trigger and mods_ok():
+            if key == trigger:
                 self._handle_press()
 
         def on_release(key):
-            if key in ALL_MODS:
-                held_mods.discard(key)
             if key == trigger:
-                self._handle_release()
-            elif self._active and not mods_ok():
                 self._handle_release()
 
         self._listener = Listener(on_press=on_press, on_release=on_release)
@@ -416,62 +380,25 @@ class EvdevListener(HotkeyListener):
     def _parse_hotkey(self):
         import evdev.ecodes as e
 
-        MODIFIER_MAP = {
-            "ctrl": e.KEY_LEFTCTRL, "ctrl_l": e.KEY_LEFTCTRL, "ctrl_r": e.KEY_RIGHTCTRL,
-            "shift": e.KEY_LEFTSHIFT, "shift_l": e.KEY_LEFTSHIFT, "shift_r": e.KEY_RIGHTSHIFT,
-            "alt": e.KEY_LEFTALT, "alt_l": e.KEY_LEFTALT, "alt_r": e.KEY_RIGHTALT,
-            "super": e.KEY_LEFTMETA, "super_l": e.KEY_LEFTMETA, "super_r": e.KEY_RIGHTMETA,
-        }
         KEY_MAP = {
             "scroll_lock": e.KEY_SCROLLLOCK, "pause": e.KEY_PAUSE,
-            "print_screen": e.KEY_SYSRQ, "insert": e.KEY_INSERT,
-            "caps_lock": e.KEY_CAPSLOCK, "num_lock": e.KEY_NUMLOCK,
-            "f1": e.KEY_F1, "f2": e.KEY_F2, "f3": e.KEY_F3, "f4": e.KEY_F4,
-            "f5": e.KEY_F5, "f6": e.KEY_F6, "f7": e.KEY_F7, "f8": e.KEY_F8,
+            "f8": e.KEY_F8,
             "f9": e.KEY_F9, "f10": e.KEY_F10, "f11": e.KEY_F11, "f12": e.KEY_F12,
-            "space": e.KEY_SPACE, "tab": e.KEY_TAB, "enter": e.KEY_ENTER,
-            "esc": e.KEY_ESC, "escape": e.KEY_ESC,
         }
-        for c in "abcdefghijklmnopqrstuvwxyz":
-            KEY_MAP[c] = getattr(e, f"KEY_{c.upper()}")
-        for n in "0123456789":
-            KEY_MAP[n] = getattr(e, f"KEY_{n}")
-
-        CANONICAL = {
-            e.KEY_RIGHTCTRL: e.KEY_LEFTCTRL, e.KEY_RIGHTSHIFT: e.KEY_LEFTSHIFT,
-            e.KEY_RIGHTALT: e.KEY_LEFTALT, e.KEY_RIGHTMETA: e.KEY_LEFTMETA,
-        }
-
-        parts = [p.strip() for p in self.hotkey.split("+")]
-        modifiers = set()
-        trigger = None
-
-        for part in parts:
-            if part in MODIFIER_MAP:
-                modifiers.add(MODIFIER_MAP[part])
-            elif part in KEY_MAP:
-                trigger = KEY_MAP[part]
-            else:
-                raise ValueError(f"Unknown key: {part!r}")
-
-        if trigger is None:
-            raise ValueError(f"No trigger key in hotkey: {self.hotkey!r}")
-
-        return modifiers, trigger, CANONICAL
+        try:
+            return KEY_MAP[self.hotkey]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unsupported hotkey: {self.hotkey!r}. Choose one of: "
+                f"{', '.join(SUPPORTED_HOTKEYS)}"
+            ) from exc
 
     def _run(self):
         import select
 
         devices = self._find_keyboards()
         self._devices = devices
-        modifiers, trigger, CANONICAL = self._parse_hotkey()
-        held: Set[int] = set()
-
-        def canon(c):
-            return CANONICAL.get(c, c)
-
-        def mods_ok():
-            return modifiers.issubset({canon(c) for c in held})
+        trigger = self._parse_hotkey()
 
         fd_map = {d.fd: d for d in devices}
 
@@ -482,14 +409,10 @@ class EvdevListener(HotkeyListener):
                     if event.type != 1:
                         continue
                     if event.value == 1:  # press
-                        held.add(event.code)
-                        if event.code == trigger and mods_ok():
+                        if event.code == trigger:
                             self._handle_press()
                     elif event.value == 0:  # release
-                        held.discard(event.code)
                         if event.code == trigger:
-                            self._handle_release()
-                        elif self._active and not mods_ok():
                             self._handle_release()
 
     def _cleanup(self):
@@ -500,7 +423,7 @@ class EvdevListener(HotkeyListener):
                 pass
 
 
-def create_listener(on_press, on_release, hotkey="scroll_lock", backend=None):
+def create_listener(on_press, on_release, hotkey="f9", backend=None):
     """Auto-select the best hotkey backend."""
     if backend == "pynput":
         return PynputListener(on_press, on_release, hotkey)
@@ -546,10 +469,10 @@ def print_setup_help(error: Exception):
     if server == "wayland":
         print("  2. Install Wayland tools: sudo pacman -S wtype wl-clipboard", file=sys.stderr)
         print("  3. Enable global hotkeys: sudo usermod -aG input $USER", file=sys.stderr)
-        print(f"  4. Log out and back in, then run: {venv_python} stt_hotkey.py --backend evdev --hotkey f9", file=sys.stderr)
+        print(f"  4. Log out and back in, then run: {venv_python} stt_hotkey.py --backend evdev", file=sys.stderr)
     else:
         print("  2. Install X11 tools: sudo pacman -S xdotool xclip", file=sys.stderr)
-        print(f"  3. Run: {venv_python} stt_hotkey.py --backend pynput --hotkey f9", file=sys.stderr)
+        print(f"  3. Run: {venv_python} stt_hotkey.py --backend pynput", file=sys.stderr)
 
     print("", file=sys.stderr)
     print(f"Detected session: {server}", file=sys.stderr)
@@ -651,17 +574,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  %(prog)s                              # Scroll Lock push-to-talk
-  %(prog)s --hotkey f9                  # F9 push-to-talk
-  %(prog)s --hotkey super+shift+s       # key combo
+  %(prog)s                              # F9 push-to-talk
+  %(prog)s --hotkey f8                  # F8 push-to-talk
+  %(prog)s --hotkey pause               # Pause/Break push-to-talk
   %(prog)s --no-type                    # print only, don't paste
   %(prog)s --backend evdev              # force evdev (Wayland)
 """,
     )
     parser.add_argument(
-        "--hotkey", default="scroll_lock",
-        help="Hotkey for push-to-talk (default: scroll_lock). "
-             "Examples: f9, pause, super+shift+s",
+        "--hotkey", default="f9", choices=SUPPORTED_HOTKEYS,
+        help="Push-to-talk key (default: f9)",
     )
     parser.add_argument(
         "--model", default="base.en",

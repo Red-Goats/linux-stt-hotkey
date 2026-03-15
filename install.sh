@@ -71,15 +71,15 @@ if [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; the
     echo "  For global hotkeys, add your user to the input group and log out/in:"
     echo "    sudo usermod -aG input \$USER"
     echo "  Recommended start command after re-login:"
-    echo "    $VENV_DIR/bin/python $SCRIPT_DIR/stt_hotkey.py --backend evdev --hotkey f9"
+    echo "    $VENV_DIR/bin/python $SCRIPT_DIR/stt_hotkey.py --backend evdev"
     echo ""
 fi
 
 echo "Usage:"
 echo "  $VENV_DIR/bin/python $SCRIPT_DIR/stt_hotkey.py"
 echo ""
-echo "Default hotkey: Scroll Lock (push-to-talk)"
-echo "Change with:    $VENV_DIR/bin/python $SCRIPT_DIR/stt_hotkey.py --hotkey super+shift+s"
+echo "Default hotkey: F9 (push-to-talk)"
+echo "Change with:    $VENV_DIR/bin/python $SCRIPT_DIR/stt_hotkey.py --hotkey f8"
 echo ""
 echo "Models available:"
 echo "  --model tiny.en    Fastest, ~39MB  (lower accuracy)"
