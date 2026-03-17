@@ -255,23 +255,28 @@ class MicRecorder:
         )
         self._stream.start()
 
-    def stop(self) -> bytes:
-        """Stop capturing and return WAV bytes."""
+    def stop(self):
+        """Stop the audio stream. Does NOT drain the queue."""
         self._recording = False
         if self._stream:
             self._stream.stop()
             self._stream.close()
             self._stream = None
 
+    def drain_chunk(self) -> bytes:
+        """Drain currently buffered audio as WAV bytes WITHOUT stopping the stream.
+        Returns empty bytes if no audio buffered."""
         frames = []
         while not self._audio_queue.empty():
-            frames.append(self._audio_queue.get_nowait())
+            try:
+                frames.append(self._audio_queue.get_nowait())
+            except queue.Empty:
+                break
 
         if not frames:
             return b""
 
         audio = np.concatenate(frames, axis=0)
-
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(self.channels)
@@ -279,6 +284,12 @@ class MicRecorder:
             wf.setframerate(self.samplerate)
             wf.writeframes(audio.tobytes())
         return buf.getvalue()
+
+    def stop_and_drain(self) -> bytes:
+        """Stop the stream and return all buffered audio as WAV bytes.
+        This is the original stop() behavior, kept for non-streaming use."""
+        self.stop()
+        return self.drain_chunk()
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -323,6 +334,95 @@ class SpeechRecognizer:
             return text.strip()
         finally:
             os.unlink(tmp_path)
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Streaming Transcriber
+# ───────────────────────────────────────────────────────────────────────────
+
+class StreamingTranscriber:
+    """Manages streaming transcription: periodic chunk processing + notification updates."""
+
+    CHUNK_INTERVAL = 5.0  # seconds between chunk transcriptions
+
+    def __init__(self, recognizer: "SpeechRecognizer", recorder: MicRecorder):
+        self._recognizer = recognizer
+        self._recorder = recorder
+        self._stop_event = threading.Event()
+        self._done_event = threading.Event()
+        self._segments: list[str] = []
+        self._lock = threading.Lock()
+        self._final_text: Optional[str] = None
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self):
+        """Start the streaming transcription loop in a background thread."""
+        self._stop_event.clear()
+        self._done_event.clear()
+        self._segments = []
+        self._final_text = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop_and_finalize(self) -> str:
+        """Signal stop, process final chunk, return full assembled text.
+        Called from hotkey release handler. Blocks until final text ready."""
+        self._stop_event.set()
+        self._done_event.wait(timeout=30.0)
+        return self._final_text or ""
+
+    def _run(self):
+        """Main streaming loop. Runs in background thread."""
+        try:
+            while not self._stop_event.is_set():
+                # Wait for chunk interval or stop signal
+                self._stop_event.wait(timeout=self.CHUNK_INTERVAL)
+
+                if self._stop_event.is_set():
+                    break  # will handle final chunk below
+
+                # Drain and transcribe intermediate chunk
+                wav_data = self._recorder.drain_chunk()
+                if wav_data:
+                    text = self._recognizer.transcribe(wav_data)
+                    if text:
+                        with self._lock:
+                            self._segments.append(text)
+                        self._update_notification()
+
+            # Final chunk: drain remaining audio after recorder.stop() was called
+            final_wav = self._recorder.drain_chunk()
+            if final_wav:
+                text = self._recognizer.transcribe(final_wav)
+                if text:
+                    with self._lock:
+                        self._segments.append(text)
+
+            with self._lock:
+                self._final_text = " ".join(self._segments)
+
+        except Exception:
+            logger.exception("Streaming transcription error")
+            with self._lock:
+                self._final_text = " ".join(self._segments)  # return what we have
+        finally:
+            self._done_event.set()
+
+    def _update_notification(self):
+        """Update the desktop notification with current partial text."""
+        with self._lock:
+            partial = " ".join(self._segments)
+
+        if not partial:
+            return
+
+        display = partial[:120] + ("..." if len(partial) > 120 else "")
+        notify(
+            "Transcribing...",
+            display,
+            icon="audio-input-microphone",
+            expire_ms=30000,
+        )
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -654,6 +754,7 @@ class STTApp:
         self.options = options
         self._lock = threading.Lock()
         self._recording = False
+        self._streaming: Optional[StreamingTranscriber] = None
         self._pid_handle = None
         self._shutdown = threading.Event()
 
@@ -673,9 +774,13 @@ class STTApp:
             if self._recording:
                 return
             self._recording = True
-        logger.info("Recording started")
+        logger.info("Recording started (streaming mode)")
         notify("Recording", "Speak now...", expire_ms=30000)
         self.recorder.start()
+
+        # Start streaming transcription
+        self._streaming = StreamingTranscriber(self.recognizer, self.recorder)
+        self._streaming.start()
 
     def _on_hotkey_release(self):
         with self._lock:
@@ -683,20 +788,27 @@ class STTApp:
                 return
             self._recording = False
 
-        logger.info("Recording stopped, transcribing...")
-        notify("Processing", "Transcribing speech...", expire_ms=5000)
+        logger.info("Recording stopped, finalizing...")
 
-        wav_data = self.recorder.stop()
-        if not wav_data:
-            logger.warning("No audio captured")
-            notify("No Audio", "No speech was recorded.", icon="dialog-warning", expire_ms=2000)
+        # Stop the audio stream first so drain_chunk gets everything
+        self.recorder.stop()
+
+        # Finalize in a thread to avoid blocking hotkey listener
+        streaming = self._streaming
+        self._streaming = None
+        threading.Thread(
+            target=self._finalize_streaming,
+            args=(streaming,),
+            daemon=True,
+        ).start()
+
+    def _finalize_streaming(self, streaming: Optional[StreamingTranscriber]):
+        """Finalize streaming transcription and type the result."""
+        if streaming is None:
             return
 
-        # Transcribe in a thread to avoid blocking the hotkey listener
-        threading.Thread(target=self._transcribe, args=(wav_data,), daemon=True).start()
-
-    def _transcribe(self, wav_data: bytes):
-        text = self.recognizer.transcribe(wav_data)
+        notify("Processing", "Finalizing...", expire_ms=5000)
+        text = streaming.stop_and_finalize()
 
         if not text:
             notify("No Speech", "Could not recognize any speech.",
@@ -708,11 +820,11 @@ class STTApp:
         print(f"  >> {text}")
 
         if self.options.auto_type:
-            time.sleep(0.1)  # small delay for window focus
+            time.sleep(0.1)
             type_text(text)
 
-        preview = text[:80] + ("..." if len(text) > 80 else "")
-        notify("Done", preview, icon="dialog-information", expire_ms=3000)
+        notify("Done", text[:80] + ("..." if len(text) > 80 else ""),
+               icon="dialog-information", expire_ms=2000)
 
     def run(self):
         """Start the app and block until Ctrl+C."""
